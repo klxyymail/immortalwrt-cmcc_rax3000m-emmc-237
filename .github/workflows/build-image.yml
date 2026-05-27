@@ -14,7 +14,7 @@ env:
   LAN_IP: '192.168.3.1'
   HOSTNAME: 'RoWrt'
   DEFAULT_THEME: 'argon'
-  HIGH_POWER_5G: true
+  HIGH_POWER_5G: false
   WIFINAME_2G: 'DaGe'
   WIFINAME_5G: 'DaGe'
   SSH: false
