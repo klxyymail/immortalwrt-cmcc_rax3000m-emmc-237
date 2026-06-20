@@ -44,15 +44,28 @@ jobs:
       - name: 获取详细更新日志
         id: getCommitInfo
         run: |
-          if [ steps.cacheHash.outputs.cache-hit != 'true' ]; then
+          if [ "${{ steps.cacheHash.outputs.cache-hit }}" != 'true' ]; then
               echo "开始执行源码更新检测..."
               echo "目标仓库：${REPO_URL}"
               echo "分支：${REPO_BRANCH}"
-              echo "最新提交哈希：${{ steps.getHash.outputs.commitHash }}"
+              COMMIT_HASH=${{ steps.getHash.outputs.commitHash }}
+              echo "最新提交哈希：${COMMIT_HASH}"
+              
+              # 标记是否存在有效更新
+              HAS_UPDATE="false"
               
               if [ -f .commitHash ]; then
                 LAST_HASH=$(cat .commitHash)
                 echo "上次记录的哈希值：${LAST_HASH}"
+
+                # ========== 新增核心修复：新旧哈希完全相等直接退出 ==========
+                if [ "${LAST_HASH}" = "${COMMIT_HASH}" ]; then
+                  echo "新旧提交哈希完全一致，源码无任何更新，跳过日志拉取"
+                  echo "commitLogs<<EOF" >> ${GITHUB_OUTPUT}
+                  echo "" >> ${GITHUB_OUTPUT}
+                  echo "EOF" >> ${GITHUB_OUTPUT}
+                  exit 0
+                fi
                 
                 echo "正在获取两次提交之间的更新日志..."
                 try_count=0
@@ -62,6 +75,13 @@ jobs:
                 while [ $try_count -lt $max_tries ]; do
                   if git log --pretty=format:"%h: %s %ad" --date=format:"%Y-%m-%d %H:%M:%S" ${LAST_HASH}..${COMMIT_HASH} > /tmp/commit_logs.txt 2>/dev/null; then
                     COMMIT_LOGS=$(cat /tmp/commit_logs.txt)
+                    # 判断日志是否为空，为空说明区间无提交
+                    if [ -z "${COMMIT_LOGS}" ]; then
+                      echo "两次哈希区间无提交记录，源码未更新"
+                      COMMIT_LOGS=""
+                    else
+                      HAS_UPDATE="true"
+                    fi
                     break
                   else
                     try_count=$((try_count+1))
@@ -72,6 +92,7 @@ jobs:
                     
                     if [ $try_count -eq $max_tries ]; then
                       echo "已获取最新的10条提交日志作为备选。"
+                      HAS_UPDATE="true"
                       break
                     fi
                     
@@ -81,18 +102,26 @@ jobs:
               else
                 echo "首次运行，无历史哈希记录，获取最新的10条提交日志。"
                 COMMIT_LOGS=$(git log -10 --pretty=format:"%h: %s %ad" --date=format:"%Y-%m-%d %H:%M:%S" origin/${REPO_BRANCH})
+                HAS_UPDATE="true"
               fi
               
               echo "成功获取更新日志："
               echo "${COMMIT_LOGS}"
-              COMMIT_LOGS_SINGLE=$(echo "$COMMIT_LOGS" | tr '\n\r' '|' | sed 's/|||*/|||/g')
+              # 日志为空则直接输出空，避免无效参数
+              if [ -z "${COMMIT_LOGS}" ]; then
+                COMMIT_LOGS_SINGLE=""
+              else
+                COMMIT_LOGS_SINGLE=$(echo "$COMMIT_LOGS" | tr '\n\r' '|' | sed 's/|||*/|||/g')
+              fi
               echo "commitLogs<<EOF" >> ${GITHUB_OUTPUT}
               echo "${COMMIT_LOGS_SINGLE}" >> ${GITHUB_OUTPUT}
               echo "EOF" >> ${GITHUB_OUTPUT}
           else
-              echo "无更新日志，跳过触发构建镜像。"
+              echo "缓存命中，源码无更新，跳过日志拉取"
+              echo "commitLogs<<EOF" >> ${GITHUB_OUTPUT}
+              echo "" >> ${GITHUB_OUTPUT}
+              echo "EOF" >> ${GITHUB_OUTPUT}
           fi
-      
       - name: 保存新提交哈希
         if: steps.cacheHash.outputs.cache-hit != 'true'
         run: |
@@ -102,6 +131,12 @@ jobs:
         id: compile
         if: steps.cacheHash.outputs.cache-hit != 'true'
         run: |
+          # 二次校验：更新日志为空直接退出，不触发构建
+          if [[ -z "${{ steps.getCommitInfo.outputs.commitLogs }}" ]]; then
+            echo "更新日志为空，源码无变更，放弃触发构建"
+            exit 0
+          fi
+
           echo "=== 安装jq工具用于解析JSON ==="
           sudo apt-get update
           sudo apt-get install -y jq
@@ -145,7 +180,6 @@ jobs:
             echo "错误信息: $RESPONSE"
             # 不中断流程，仅记录错误
           fi
-      
       - name: 清理旧工作流记录
         uses: GitRML/delete-workflow-runs@main
         with:
