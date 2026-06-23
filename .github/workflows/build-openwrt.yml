@@ -48,7 +48,7 @@ on:
       high_power_5g:
         description: '5G高功率25db'
         required: false
-        default: true
+        default: false
         type: boolean
       ssh:
         description: '通过SSH连接到Actions'
