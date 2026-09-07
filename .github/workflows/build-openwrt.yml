@@ -24,7 +24,7 @@ on:
       lan_ip:
         description: '设置LAN IP地址'
         required: false
-        default: '192.168.3.1'
+        default: '192.168.6.1'
       default_theme:
         description: '选择默认主题'
         required: false
@@ -36,15 +36,15 @@ on:
       hostname:
         description: '设置主机名'
         required: false
-        default: 'RoWrt'
+        default: 'RAX3000M-EMMC'
       wifiname_2g:
         description: '设置2.4GWiFi名称'
         required: false
-        default: 'DaGe'
+        default: 'ImmortalWrt-2.4G'
       wifiname_5g:
         description: '设置5GWiFi名称'
         required: false
-        default: 'DaGe'
+        default: 'ImmortalWrt-5G'
       high_power_5g:
         description: '5G高功率25db'
         required: false
