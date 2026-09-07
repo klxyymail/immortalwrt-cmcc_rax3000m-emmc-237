@@ -6,7 +6,7 @@
 # Description: Build OpenWrt using GitHub Actions
 #
 
-name: 编译固件（RAX3000M-EMMC）
+name: 编译固件（XR30-EMMC）
 
 on:
   repository_dispatch:  
@@ -36,7 +36,7 @@ on:
       hostname:
         description: '设置主机名'
         required: false
-        default: 'RAX3000M-EMMC'
+        default: 'CMCC-XR30-eMMC'
       wifiname_2g:
         description: '设置2.4GWiFi名称'
         required: false
