@@ -65,5 +65,7 @@ clone_package "https://github.com/rogueme/luci-app-adguardhome.git" "package/luc
 clone_package "https://github.com/sirpdboy/luci-app-taskplan.git" "package/luci-app-taskplan"
 # 克隆mentohust解决luci-app-airwhu缺失依赖的警告
 clone_package "https://github.com/KyleRicardo/MentoHUST-OpenWrt-ipk.git" "package/mentohust"
+# 克隆 Harbor File pro（Windows 风格文件管理器，对应 CONFIG_PACKAGE_luci-app-harbor-file-pro）
+clone_package "https://github.com/whzhni1/luci-app-harbor-file-pro.git" "package/luci-app-harbor-file-pro"
 
 echo "✅ diy-part1.sh 执行完成"
