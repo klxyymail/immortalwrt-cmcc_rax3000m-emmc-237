@@ -509,7 +509,7 @@ jobs:
                 log_info "defconfig.config 未修改，无需上传" 0
             else
                 git add "defconfig.config"
-                git commit -m "更新 defconfig.config（Actions #${GITHUB_RUN_NUMBER}）"
+                git commit -m "更新 defconfig.config（Actions # ${GITHUB_RUN_NUMBER}）"
                 git push "https://${{ secrets.REPO_TOKEN }}@github.com/${{ github.repository }}.git" "${{ github.ref }}"
                 log_success "defconfig.config 已更新并上传" 0
             fi
