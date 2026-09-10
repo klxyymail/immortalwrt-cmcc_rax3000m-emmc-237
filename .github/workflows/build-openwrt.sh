@@ -456,6 +456,17 @@ log_success "自定义配置加载完成！"
 # ======================================================
 download_packages() {
 cd "$SOURCE_DIR"
+# 修正 ccache 目录：make 的工作目录就是源码目录，"./openwrt/.ccache" 这类相对路径
+# 会被解析成 openwrt/openwrt/.ccache，缓存命中率归零。这里统一改写成绝对路径兜底。
+if [ "${CACHEWRTBUILD_SWITCH:-false}" = "true" ]; then
+    update_config_option "CONFIG_CCACHE" "y" ".config"
+    update_config_option "CONFIG_CCACHE_DIR" "$(pwd)/.ccache" ".config"
+    if [ -d "$(pwd)/.ccache" ]; then
+        log_info "ccache 目录：$(pwd)/.ccache（大小：$(du -sh .ccache 2>/dev/null | cut -f1)）"
+    else
+        log_warn "未找到 .ccache 目录：$(pwd)/.ccache，本次为冷编译"
+    fi
+fi
 log_info "执行make defconfig进行配置的验证与补全，会改变.config配置文件，如果编译比原.config配置文件少东西可以尝试删掉这个命令"
 make defconfig
 log_success "make defconfig执行完成"
@@ -488,6 +499,21 @@ compile_firmware() {
     # 先记下进入源码目录之前的路径（即 WORK_DIR），避免 WORK_DIR 为 "." 时
     # 日志被写进源码目录里，导致后续上传步骤找不到文件
     local root_dir="$PWD"
+
+    # 【关键】清掉上一轮遗留在 staging_dir 里的工具链。
+    # 若 actions/cache 把 staging_dir 缓存了下来，下一轮会恢复出一个"已经装好 musl/libc"的
+    # staging_dir/toolchain-*。而 binutils 的编译命令里带 -I$(STAGING_DIR_TOOLCHAIN)/include，
+    # 于是 aarch64 的 musl 头文件会盖掉宿主机的 glibc 头文件，musl 没有 off64_t/fseeko64，
+    # 结果是：./readelf.c:375:3: error: unknown type name 'off64_t'
+    # 正常构建顺序下 binutils 先于 musl 编译，该目录是空的，所以只有缓存复用时才会踩到。
+    # build_dir 没被缓存 → 工具链必然要从零重编 → 这些残留直接删掉即可。
+    if ! ls -d "$SOURCE_DIR"/build_dir/toolchain-* >/dev/null 2>&1; then
+        if ls -d "$SOURCE_DIR"/staging_dir/toolchain-* >/dev/null 2>&1; then
+            log_warn "检测到缓存残留的 staging_dir/toolchain-*，本次工具链需从零重编，已清理以避免 musl 头文件污染 binutils 编译"
+            rm -rf "$SOURCE_DIR"/staging_dir/toolchain-*
+        fi
+    fi
+
     cd "$SOURCE_DIR"
     # 注意：workflow 的 step 以 `bash -e` 执行，make 一旦返回非 0，set -e 会立刻终止当前
     # shell，导致下一行的 `local make_exit_code=$?` 与单线程重试永远执行不到（这正是
@@ -545,20 +571,44 @@ compile_firmware() {
 # ======================================================
 dump_build_failure() {
     local log_file="$1"
-    # 若是在 configure 阶段就失败（通常几十秒内挂掉），报错只在 config.log 里
+    if [ ! -s "$log_file" ]; then
+        log_warn "编译日志为空：$log_file"
+        return 0
+    fi
+
+    # 第一步：优先抽取真正的报错行及其上下文，避免被几千行正常输出淹没
+    local hit_lines
+    hit_lines=$(grep -nE 'error:|Error [0-9]+|undefined reference to|cannot find -l|No such file or directory|collect2:' "$log_file" 2>/dev/null | cut -d: -f1 | sort -un | head -n 10 || true)
+    if [ -n "$hit_lines" ]; then
+        log_error "编译日志中的关键报错片段（报错行及其上下 15 行）：$log_file"
+        local ln start end prev_end=-100
+        while IFS= read -r ln; do
+            start=$((ln - 15))
+            [ "$start" -lt 1 ] && start=1
+            # 与上一段重叠就接着输出，避免同一处报错被重复打印
+            [ "$start" -le "$prev_end" ] && continue
+            end=$((ln + 5))
+            prev_end=$end
+            log_info "---------- 第 ${start}~${end} 行 ----------" 0
+            sed -n "${start},${end}p" "$log_file"
+        done <<< "$hit_lines"
+        return 0
+    fi
+
+    # 第二步：没有编译期报错，多半是 configure 阶段就挂了，去 config.log 里找
+    log_warn "日志中未发现编译期报错，尝试从 configure 日志定位..."
     local cfg_logs
-    cfg_logs=$(find "$PWD/build_dir" -name 'config.log' -mmin -60 2>/dev/null | head -n 5)
+    cfg_logs=$(find "$PWD/build_dir" -name 'config.log' -mmin -60 2>/dev/null | head -n 3 || true)
     if [ -n "$cfg_logs" ]; then
-        log_warn "检测到近期生成的 configure 日志，可能是配置阶段失败，末尾内容如下："
         while IFS= read -r cfg; do
             log_info "---------- $cfg ----------" 0
-            tail -n 40 "$cfg"
+            grep -nE 'configure: error|error:|cannot (find|create|run)' "$cfg" 2>/dev/null | head -n 20 || true
         done <<< "$cfg_logs"
+        return 0
     fi
-    if [ -s "$log_file" ]; then
-        log_error "完整编译日志已保存到：$log_file，以下是末尾 3000 行："
-        tail -n 3000 "$log_file"
-    fi
+
+    log_error "完整编译日志已保存到：$log_file，以下是末尾 200 行："
+    tail -n 200 "$log_file"
 }
 
 update_config_option() {
