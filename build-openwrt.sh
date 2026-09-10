@@ -1,7 +1,7 @@
 # ======================================================
 # 函数列表 - 所有需要导出的函数
 # ======================================================
-ALL_FUNCTIONS=(log_info log_error log_warn log_success log_separator log_highlight log_debug init_env prepare_source load_custom_feeds update_install_feeds load_custom_config download_packages compile_firmware)
+ALL_FUNCTIONS=(log_info log_error log_warn log_success log_separator log_highlight log_debug init_env prepare_source load_custom_feeds update_install_feeds load_custom_config download_packages compile_firmware dump_build_failure)
 # ======================================================
 # 日志函数 - 添加颜色支持
 # ======================================================
@@ -485,24 +485,79 @@ log_success "软件包下载完成！"
 # 返回值: 0表示成功
 # ======================================================
 compile_firmware() {
+    # 先记下进入源码目录之前的路径（即 WORK_DIR），避免 WORK_DIR 为 "." 时
+    # 日志被写进源码目录里，导致后续上传步骤找不到文件
+    local root_dir="$PWD"
     cd "$SOURCE_DIR"
+    # 注意：workflow 的 step 以 `bash -e` 执行，make 一旦返回非 0，set -e 会立刻终止当前
+    # shell，导致下一行的 `local make_exit_code=$?` 与单线程重试永远执行不到（这正是
+    # 之前日志里只看到 "ERROR: xxx failed to build." 却没有任何具体报错的原因）。
+    # 因此这里统一使用 `cmd || var=$?` 的写法，让 make 的失败可被捕获而不触发 set -e。
+    local log_file="$root_dir/build.log"
+    local detail_log="$root_dir/build-detail.log"
+    local make_exit_code=0
+
     log_info "开始编译固件（使用$(nproc)线程）..."
-    (make -j$(nproc))
-    local make_exit_code=$?
+    (set -o pipefail; make -j$(nproc) 2>&1 | tee "$log_file") || make_exit_code=$?
     if [ $make_exit_code -eq 0 ]; then
         log_success "固件编译完成！"
         return 0
+    fi
+
+    # 多线程是静默构建（include/verbose.mk 把子目录输出重定向到 /dev/null），
+    # 只有靠 -j1 V=s 才能拿到真正的报错行。先从 ERROR 行里解析出失败的包，
+    # 只重编这一个包即可复现，比全量 -j1 V=s 快很多。
+    local failed_pkg
+    failed_pkg=$(grep -oP 'ERROR: \K[^ ]+(?= failed to build)' "$log_file" 2>/dev/null | tail -n 1)
+    local detail_code=0
+    if [ -n "$failed_pkg" ]; then
+        log_error "多线程编译失败（退出码：$make_exit_code），失败的包：$failed_pkg"
+        log_error "对该包单独执行 -j1 V=s 以输出详细错误，日志文件：$detail_log"
+        (make "$failed_pkg/compile" -j1 V=s) > "$detail_log" 2>&1 || detail_code=$?
     else
-        log_error "多线程编译失败，尝试单线程编译..."
-        (make -j1 V=s)
-        local make_single_exit_code=$?
-        if [ $make_single_exit_code -eq 0 ]; then
-            log_success "单线程编译完成！"
-            return 0
-        else
-            log_error "固件编译失败，编译退出码：$make_single_exit_code"
-            exit 1
-        fi
+        log_error "多线程编译失败（退出码：$make_exit_code），未能解析出失败的包，改为 -j1 V=s 全量重编"
+        (make -j1 V=s) > "$detail_log" 2>&1 || detail_code=$?
+    fi
+
+    if [ $detail_code -ne 0 ]; then
+        log_error "固件编译失败，编译退出码：$detail_code"
+        dump_build_failure "$detail_log"
+        exit 1
+    fi
+
+    # 单包重编成功，多半是并发或瞬时问题，继续跑完整编译
+    log_success "单线程重编成功，继续完成剩余编译..."
+    make_exit_code=0
+    (set -o pipefail; make -j$(nproc) 2>&1 | tee "$log_file") || make_exit_code=$?
+    if [ $make_exit_code -ne 0 ]; then
+        log_error "继续编译仍然失败，退出码：$make_exit_code"
+        dump_build_failure "$log_file"
+        exit 1
+    fi
+    log_success "固件编译完成！"
+    return 0
+}
+
+# ======================================================
+# 输出编译失败上下文
+# 功能: 打印 configure 日志与编译日志末尾，定位真正的报错行
+# 参数1: 编译日志文件
+# ======================================================
+dump_build_failure() {
+    local log_file="$1"
+    # 若是在 configure 阶段就失败（通常几十秒内挂掉），报错只在 config.log 里
+    local cfg_logs
+    cfg_logs=$(find "$PWD/build_dir" -name 'config.log' -mmin -60 2>/dev/null | head -n 5)
+    if [ -n "$cfg_logs" ]; then
+        log_warn "检测到近期生成的 configure 日志，可能是配置阶段失败，末尾内容如下："
+        while IFS= read -r cfg; do
+            log_info "---------- $cfg ----------" 0
+            tail -n 40 "$cfg"
+        done <<< "$cfg_logs"
+    fi
+    if [ -s "$log_file" ]; then
+        log_error "完整编译日志已保存到：$log_file，以下是末尾 3000 行："
+        tail -n 3000 "$log_file"
     fi
 }
 
