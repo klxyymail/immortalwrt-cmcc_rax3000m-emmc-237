@@ -1,0 +1,711 @@
+#
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
+#
+# https://github.com/P3TERX/Actions-OpenWrt
+# Description: Build OpenWrt using GitHub Actions
+#
+
+name: 编译固件（XR30-EMMC）
+
+on:
+  repository_dispatch:  
+    types: [自动编译固件]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '选择编译方式'
+        required: true
+        default: 'Host'
+        type: choice
+        options:
+          - Host
+          - Docker
+      lan_ip:
+        description: '设置LAN IP地址'
+        required: false
+        default: '192.168.6.1'
+      default_theme:
+        description: '选择默认主题'
+        required: false
+        default: 'argon'
+        type: choice
+        options:
+          - argon
+          - bootstrap
+      hostname:
+        description: '设置主机名'
+        required: false
+        default: 'CMCC-XR30-eMMC'
+      wifiname_2g:
+        description: '设置2.4GWiFi名称'
+        required: false
+        default: 'ImmortalWrt-2.4G'
+      wifiname_5g:
+        description: '设置5GWiFi名称'
+        required: false
+        default: 'ImmortalWrt-5G'
+      high_power_5g:
+        description: '5G高功率25db'
+        required: false
+        default: false
+        type: boolean
+      ssh:
+        description: '通过SSH连接到Actions'
+        required: false
+        default: false
+        type: boolean
+      cachewrtbuild_switch:
+        description: '缓存加速编译'
+        required: false
+        default: true
+        type: boolean
+
+# 环境变量定义
+env:
+  # 基础配置
+  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
+  REPO_BRANCH: openwrt-24.10-6.6
+  CONFIG_FILE: .config
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  # 用户可配置参数 - 优先使用 workflow_dispatch 输入，其次使用 repository_dispatch 的 client_payload
+  LAN_IP: ${{ github.event.inputs.lan_ip || github.event.client_payload.inputs.lan_ip || '192.168.3.1' }}
+  DEFAULT_THEME: ${{ github.event.inputs.default_theme || github.event.client_payload.inputs.default_theme || 'argon' }}
+  HOSTNAME: ${{ github.event.inputs.hostname || github.event.client_payload.inputs.hostname || 'RoWrt' }}
+  HIGH_POWER_5G: ${{ format('{0}', github.event.inputs.high_power_5g || github.event.client_payload.inputs.high_power_5g || 'true') }}
+  BUILD_TYPE: ${{ github.event.inputs.build_type || github.event.client_payload.inputs.build_type || 'Host' }}
+  WIFINAME_2G: ${{ github.event.inputs.wifiname_2g || github.event.client_payload.inputs.wifiname_2g || 'DaGe' }}
+  WIFINAME_5G: ${{ github.event.inputs.wifiname_5g || github.event.client_payload.inputs.wifiname_5g || 'DaGe' }}
+  SSH: ${{ format('{0}', github.event.inputs.ssh || github.event.client_payload.inputs.ssh || 'false') }}
+  CACHEWRTBUILD_SWITCH: ${{ format('{0}', github.event.inputs.cachewrtbuild_switch || github.event.client_payload.inputs.cachewrtbuild_switch || 'true') }}
+  # 上传配置
+  UPLOAD_BIN_DIR: true
+  UPLOAD_FIRMWARE: true
+  UPLOAD_COWTRANSFER: false
+  UPLOAD_WETRANSFER: false
+  UPLOAD_RELEASE: true
+  TZ: Asia/Shanghai
+  # 统一目录并使用相对路径，兼容host和docker
+  WORK_DIR: .
+  SOURCE_DIR: ./openwrt
+  # Docker相关配置
+  DOCKER_IMAGE: ghcr.io/${{ github.repository_owner }}/openwrt-builder:latest
+  SRC_OPENWRT_DIR: /opt/openwrt # 容器内置源码目录
+  DEFAULT_DIR: /opt/build #容器默认工作目录
+  GITHUB_RUN_NUMBER: ${{ github.run_number }}
+  # 新增缓存相关变量
+  # v2：v1 的缓存里带了 staging_dir（含已装好 musl 的 toolchain 目录），会让 binutils
+  # 编译失败，这里升版本让旧缓存直接失效，不用手动去删 cache
+  CACHE_VERSION: v2
+  KEEP_RECENT_CACHES: 3
+  DEVICE_NAME: cmcc_rax3000m-emmc
+  KERNEL_VERSION: "6.6"
+  SYSTEM_VERSION: "24.10"
+  BUILD_SCRIPT: ./build-openwrt.sh
+  TRIGGER_SOURCE: ${{ github.event.inputs.trigger_source || github.event.client_payload.inputs.trigger_source || '手动触发' }}
+  COMMIT_LOGS: "无更新日志"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 600
+
+    steps:
+    - name: 检查代码
+      uses: actions/checkout@main
+
+    - name: 检查服务器性能
+      run: |
+        chmod +x ${{ env.BUILD_SCRIPT }}
+        source ${{ env.BUILD_SCRIPT }}
+        log_info "当前目录：$PWD" 0
+        log_warn "警告：分配的服务器性能有限，若选择插件过多，务必注意CPU性能！" 0
+        log_highlight "已知CPU型号（降序）：7763，8370C，8272CL，8171M，E5-2673" 0
+        log_info "--------------------------CPU信息--------------------------" 0
+        log_highlight "CPU信息：$(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)" 0
+        log_highlight "CPU核心信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c)" 0
+        log_info "--------------------------内存信息--------------------------" 0
+        ddrminfo="$(sudo lshw -short -C memory | grep GiB)"
+        echo -e "$ddrminfo" | while IFS= read -r line; do
+          log_highlight "$line" 0
+        done
+        log_info "----------------------硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l)-信息----------------------" 0
+        hddinfo="$(df -hT)"
+        echo -e "$hddinfo" | while IFS= read -r line; do
+          log_highlight "$line" 0
+        done
+
+    - name: 设置环境变量
+      run: |
+        # 根据触发来源设置环境变量
+        source ${{ env.BUILD_SCRIPT }}
+        if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+          # 使用heredoc方式安全地设置可能包含特殊字符的变量
+          BUILD_TYPE="${{ github.event.client_payload.inputs.build_type }}"
+          REPO_URL="${{ github.event.client_payload.inputs.repo_url }}"
+          REPO_BRANCH="${{ github.event.client_payload.inputs.repo_branch }}"
+          COMMIT_HASH="${{ github.event.client_payload.inputs.commit_hash }}"
+          LAN_IP="${{ github.event.client_payload.inputs.lan_ip }}"
+          DEFAULT_THEME="${{ github.event.client_payload.inputs.default_theme }}"
+          HOSTNAME="${{ github.event.client_payload.inputs.hostname }}"
+          HIGH_POWER_5G="${{ github.event.client_payload.inputs.high_power_5g }}"
+          WIFINAME_2G="${{ github.event.client_payload.inputs.wifiname_2g }}"
+          WIFINAME_5G="${{ github.event.client_payload.inputs.wifiname_5g }}"
+          SSH="${{ github.event.client_payload.inputs.ssh }}"
+          CACHEWRTBUILD_SWITCH="${{ github.event.client_payload.inputs.cachewrtbuild_switch }}"
+          COMMIT_LOGS="${{ github.event.client_payload.inputs.commit_logs }}"
+          TRIGGER_SOURCE="${{ github.event.client_payload.inputs.trigger_source }}"
+          echo "BUILD_TYPE=${BUILD_TYPE}" >> $GITHUB_ENV 
+          echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
+          echo "REPO_BRANCH=${REPO_BRANCH}" >> $GITHUB_ENV
+          echo "COMMIT_HASH=${COMMIT_HASH}" >> $GITHUB_ENV
+          echo "LAN_IP=${LAN_IP}" >> $GITHUB_ENV
+          echo "DEFAULT_THEME=${DEFAULT_THEME}" >> $GITHUB_ENV
+          echo "HOSTNAME=${HOSTNAME}" >> $GITHUB_ENV
+          echo "HIGH_POWER_5G=${HIGH_POWER_5G}" >> $GITHUB_ENV
+          echo "WIFINAME=${WIFINAME}" >> $GITHUB_ENV
+          echo "SSH=${SSH}" >> $GITHUB_ENV
+          echo "CACHEWRTBUILD_SWITCH=${CACHEWRTBUILD_SWITCH}" >> $GITHUB_ENV
+          echo "COMMIT_LOGS=${COMMIT_LOGS}" >> $GITHUB_ENV
+          echo "TRIGGER_SOURCE=${TRIGGER_SOURCE}" >> $GITHUB_ENV
+          log_highlight "从${TRIGGER_SOURCE}工作流触发，使用传递的参数" 1
+        else
+          log_highlight "${TRIGGER_SOURCE}，使用默认参数或指定参数" 1
+        fi
+        log_highlight "编译类型: ${BUILD_TYPE}" 0
+        log_highlight "源码仓库: ${REPO_URL}" 0
+        log_highlight "源码分支: ${REPO_BRANCH}" 0
+        log_highlight "本地IP: ${LAN_IP}" 0
+        log_highlight "默认主题: ${DEFAULT_THEME}" 0
+        log_highlight "主机名: ${HOSTNAME}" 0
+        log_highlight "5G高功率: ${HIGH_POWER_5G}" 0
+        log_highlight "2.4GWiFi名称: ${WIFINAME_2G}" 0
+        log_highlight "5GWiFi名称: ${WIFINAME_5G}" 0
+        log_highlight "SSH连接: ${SSH}" 0
+        log_highlight "缓存编译: ${CACHEWRTBUILD_SWITCH}" 0
+        log_highlight "触发来源: ${TRIGGER_SOURCE}" 0
+        log_highlight "触发更新的提交哈希: ${COMMIT_HASH}" 0
+        COMMIT_LOGS_RESTORED=$(echo "$COMMIT_LOGS" | tr '|||' '\n')
+        log_highlight "触发更新的提交日志:" 0
+        count=0
+        echo -e "${COMMIT_LOGS_RESTORED}" | while IFS= read -r line; do
+          count=$((count+1))
+          log_highlight "$count. $line" 0
+        done
+
+    - name: Host环境初始化
+      if: env.BUILD_TYPE == 'Host'
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        cd "${{ env.WORK_DIR }}"
+        source ${{ env.BUILD_SCRIPT }}
+        init_env
+        prepare_source
+
+    - name: Docker环境初始化
+      if: env.BUILD_TYPE == 'Docker'
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        FILTERED_TAGS=$(skopeo list-tags docker://ghcr.io/${{ github.repository_owner }}/openwrt-builder | \
+        grep -oE '"(ubuntu22.04|latest|[0-9]{12})"' | \
+        tr -d '"' | \
+        sort -r | \
+        awk 'BEGIN{seen["ubuntu22.04"]=0; seen["latest"]=0} { \
+          if ($1 ~ /^[0-9]{12}$/) { \
+            if (!latest_ts) {latest_ts=$1; print $1} \
+          } else if (!seen[$1]++) { \
+            print $1 \
+          } \
+        }')
+        log_info "本次镜像的标签：" 0
+        echo -e "$FILTERED_TAGS" | while IFS= read -r line; do
+          log_highlight "$line" 0
+        done
+        CURRENT_UID=$(id -u)
+        CURRENT_GID=$(id -g)
+        echo "CURRENT_USER_ID=$CURRENT_UID" >> $GITHUB_ENV
+        echo "CURRENT_GROUP_ID=$CURRENT_GID" >> $GITHUB_ENV
+        log_info "-----------------" 0
+        log_info "开始打包环境变量到容器" 1
+        > .env
+        printenv | grep -E '^[a-zA-Z0-9_]+=([^\(\)]|$)' | while IFS='=' read -r var value; do
+          # log_info "环境变量：var：$var|value：$value" 0
+          echo "$var=$value" >> .env
+        done
+        log_info "环境变量打包完成，共$(grep -c '=' .env)个变量" 1
+        docker pull "${DOCKER_IMAGE}"
+        log_info "当前用户ID: $CURRENT_UID, 组ID: $CURRENT_GID" 1
+        docker run -d --name builder \
+          --user $CURRENT_UID:$CURRENT_GID \
+          --env-file .env \
+          -v "$PWD":"${DEFAULT_DIR}":rw \
+          -e TZ="${TZ}" \
+          -e FORCE_UNSAFE_CONFIGURE=1 \
+          "${DOCKER_IMAGE}" tail -f /dev/null
+        log_separator "验证容器运行状态" 0
+        docker ps -a | grep builder
+        if [ $? -ne 0 ]; then
+          log_error "❌ 容器启动失败，请查看日志：" 1
+          log_error "$(docker logs builder)" 1
+          exit 1
+        fi
+        log_success "容器运行正常" 0
+        
+        log_separator "迁移预置源码到共享目录" 0
+        docker exec builder bash -c '
+          source ${{ env.BUILD_SCRIPT }}
+          if [ -d "${SOURCE_DIR}" ]; then
+            log_warn "清理共享目录旧内容：$SOURCE_DIR" 1
+            rm -rf "${SOURCE_DIR}"/* "${SOURCE_DIR}"/.* 2>/dev/null
+          else
+            mkdir -p "${SOURCE_DIR}" && chmod 777 "${SOURCE_DIR}"
+          fi
+          log_info "开始复制源码（含隐藏文件）..." 1
+          cp -a "${SRC_OPENWRT_DIR}/." "${SOURCE_DIR}"
+          critical_files=("scripts/feeds" "target/linux" "package")
+          for file in "${critical_files[@]}"; do
+            check_path="${SOURCE_DIR}/$file"
+            if [ ! -e "$check_path" ]; then
+              log_error "迁移失败：共享目录缺失关键文件 $check_path" 1
+              exit 1
+            fi
+          done
+          log_success "预置源码迁移完成" 1
+          log_highlight "  - 从：${SRC_OPENWRT_DIR}" 1
+          log_highlight "  - 到：${SOURCE_DIR}" 1
+          log_highlight "迁移后源码体积：$(du -sh "${SOURCE_DIR}" | awk "{print \$1}")" 1
+        '
+ 
+    - name: 加载自定义feeds
+      run: |
+        if [[ "${{ env.BUILD_TYPE }}" == "Host" ]]; then
+          source ${{ env.BUILD_SCRIPT }} && load_custom_feeds
+        else
+          docker exec builder bash -c 'source ${{ env.BUILD_SCRIPT }} && load_custom_feeds'
+        fi
+
+    - name: 更新并安装feeds
+      run: |
+        if [[ "${{ env.BUILD_TYPE }}" == "Host" ]]; then
+          source ${{ env.BUILD_SCRIPT }} &&update_install_feeds
+        else
+          docker exec builder bash -c 'source ${{ env.BUILD_SCRIPT }} && update_install_feeds'
+        fi
+
+    - name: 加载.config配置
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        log_warn "由于feed install即上个步骤的安装feeds会在过程中处理.config的无效配置，为防止改变.config文件将加载.config配置步骤移到它下一步！" 0
+        WORK_CONFIG_MD5=$(md5sum "${WORK_DIR}/${CONFIG_FILE}" | awk "{print \$1}")
+        if [ -f "${SOURCE_DIR}/.config" ]; then
+          diff "${WORK_DIR}/${CONFIG_FILE}" "${SOURCE_DIR}/.config"
+          SOURCE_CONFIG_MD5=$(md5sum "${SOURCE_DIR}/.config" | awk "{print \$1}")
+          if [ "$SOURCE_CONFIG_MD5" = "$WORK_CONFIG_MD5" ]; then
+              log_success "项目.config文件与固件源码.config一致，无需更新，固件源码.configMD5校验：$SOURCE_CONFIG_MD5" 1
+              exit 0
+          else
+              log_info "项目.config文件MD5校验：$WORK_CONFIG_MD5" 1
+              log_warn "项目.config文件与固件源码.config不一致，需要更新" 1
+          fi
+          rm -rf "${SOURCE_DIR}/.config"
+        else
+          log_warn "未发现固件源码.config文件" 1
+        fi
+        cp -f "${WORK_DIR}/${CONFIG_FILE}" "${SOURCE_DIR}/.config"
+        SRC_MD5=$(md5sum "${SOURCE_DIR}/.config" | awk "{print \$1}")
+        if [ "$SRC_MD5" = "$WORK_CONFIG_MD5" ]; then
+            log_success "加载本项目.config配置文件成功！" 1
+        else
+          log_error "加载本项目.config配置文件失败：固件源码.configMD5：$SRC_MD5" 1
+            log_info "${WORK_DIR}/${CONFIG_FILE}文件信息↓↓↓："
+            log_highlight "$(ls -al "${WORK_DIR}/${CONFIG_FILE}")"
+            log_info "${SOURCE_DIR}/.config文件信息↓↓↓："
+            log_highlight "$(ls -al "${SOURCE_DIR}/.config")"
+            exit 1
+        fi
+
+    - name: 加载自定义配置
+      run: |
+        if [[ "${{ env.BUILD_TYPE }}" == "Host" ]]; then
+          source ${{ env.BUILD_SCRIPT }} && load_custom_config
+        else
+          docker exec builder bash -c 'source ${{ env.BUILD_SCRIPT }} && load_custom_config' 
+        fi
+
+    - name: SSH远程连接
+      uses: rogueme/debugger-action@main
+      if: (env.SSH == 'true' || env.SSH == true) || contains(github.event.action, 'ssh')
+      env:
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+        TIMEOUT_MIN: 240
+          
+    - name: 同步.config配置
+      if: (env.SSH == 'true' || env.SSH == true) || contains(github.event.action, 'ssh')
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        cd "$WORK_DIR"
+        CONFIG_SOURCE="$SOURCE_DIR/.config"
+        cp -f "$CONFIG_SOURCE" "$CONFIG_FILE" && log_success "已复制$CONFIG_SOURCE到项目根目录" 0
+        if git diff --quiet "$CONFIG_FILE"; then
+            log_info ".config 未修改，无需上传" 0
+        else
+            git add "$CONFIG_FILE"
+            git commit -m "自动同步SSH修改的.config（Actions #${GITHUB_RUN_NUMBER}）"
+            git push "https://${{ secrets.REPO_TOKEN }}@github.com/${{ github.repository }}.git" "${{ github.ref }}"
+            log_success ".config更新上传" 0
+        fi
+
+    - name: 提取已选插件列表
+      id: extract_plugins
+      run: |
+        source "${{ env.BUILD_SCRIPT }}"
+        cd "$SOURCE_DIR"
+        log_info "当前目录：$(pwd)" 0
+        plugins=$(grep -E '^CONFIG_PACKAGE_luci-(app|theme)-.*=y$' ".config" | 
+          awk -F'[=]' '{print substr($1, 16)}')
+        log_separator "已选插件列表[$(echo "$plugins" | grep -c '^')]" 0
+        count=0
+        while IFS= read -r plugin; do
+          if [ -n "$plugin" ]; then
+            count=$((count+1))
+            log_highlight "$count、$plugin" 0
+          fi
+        done < <(echo "$plugins")    
+        if [ $count -eq 0 ]; then
+          log_highlight "无额外插件（仅基础系统）" 0
+        fi
+
+    - name: 释放Ubuntu磁盘空间
+      uses: danshui-git/free-disk-space@main
+      continue-on-error: true
+      timeout-minutes: 15
+      with:
+        remove_android: false
+        remove_dotnet: true
+        remove_haskell: true
+        remove_tool_cache: true
+        remove_swap: true
+        remove_docker_image: ${{ github.event.inputs.build_type == 'Host' && 'true' || 'false' }}
+        # remove_packages: [google-cloud-cli temurin-* azure-cli microsoft-edge-stable google-chrome-stable firefox postgresql* *llvm* mysql* dotnet-sdk-*]
+        remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/share/glade* /usr/local/share/chromium /usr/local/share/powershell"
+        # 如果释放空间不够删掉remove_packages的注释
+        # 如果释放空间不够可在remove_folders添加/usr/local/lib/node_modules
+        # 如果释放空间不够可将remove_android改为true
+
+    - name: 检查清理后磁盘空间
+      if: (!cancelled())
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        log_info "===== 磁盘空间 =====" 0
+        log_highlight "系统空间      类型   总数  已用  可用 使用率" 0
+        log_highlight "$(df -hT "$PWD")" 0
+        
+    - name: 提取缓存相关变量
+      shell: bash
+      run: |
+        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
+        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+        DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
+        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+        DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+        echo "HASH=$(git log -1 --pretty=format:'%h')" >> $GITHUB_ENV
+        echo "DEVICE_NAME=$(grep '^CONFIG_TARGET_PROFILE="DEVICE_' .config | sed -E 's/^CONFIG_TARGET_PROFILE="DEVICE_(.*)"/\1/')" >> $GITHUB_ENV
+        echo "KERNEL_VERSION=$(grep "^CONFIG_LINUX_[0-9_]\+=y" .config | sed -r 's/CONFIG_LINUX_([0-9]+)_([0-9]+)=y/\1.\2/')" >> $GITHUB_ENV
+        if [ -f "${SOURCE_DIR}/feeds.conf.default" ]; then
+          echo "FEEDS_HASH=$(sha256sum ${SOURCE_DIR}/feeds.conf.default | cut -d ' ' -f 1)" >> $GITHUB_ENV
+        else
+          echo "FEEDS_HASH=default" >> $GITHUB_ENV
+        fi
+
+    - name: 编译缓存
+      id: cachecompile
+      if: env.CACHEWRTBUILD_SWITCH == 'true'
+      uses: actions/cache@v4
+      with:
+        key: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_VERSION }}-${{ env.FEEDS_HASH }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_VERSION }}-${{ env.FEEDS_HASH }}-
+          ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_VERSION }}-
+          ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+        # 注意：不要缓存 staging_dir！它会把上一轮已经装好 musl/libc 的
+        # staging_dir/toolchain-* 带回来，导致 binutils 编译时 musl 头文件盖掉宿主机
+        # glibc 头文件，报 "error: unknown type name 'off64_t'"。
+        # 而且 tmp/.build 每轮都会重建，host 工具的 stamp 全部失效，staging_dir 缓存
+        # 实际上也省不了时间，只留 .ccache 即可。
+        path: |
+          ${{ env.SOURCE_DIR }}/.ccache
+
+    - name: 刷新缓存
+      id: refreshcache
+      if: env.CACHEWRTBUILD_SWITCH == 'true'
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        # 启用CCACHE配置
+        update_config_option "CONFIG_CCACHE" "y" "${{ env.SOURCE_DIR }}/.config"
+        # 修复：make 的工作目录就是 SOURCE_DIR，CONFIG_CCACHE_DIR 若写成 "./openwrt/.ccache"
+        # 会被解析成 openwrt/openwrt/.ccache，缓存等于没用上。这里统一写入绝对路径。
+        CCACHE_ABS_DIR="$(cd "${{ env.SOURCE_DIR }}" && pwd)/.ccache"
+        update_config_option "CONFIG_CCACHE_DIR" "$CCACHE_ABS_DIR" "${{ env.SOURCE_DIR }}/.config"
+        log_info "ccache 目录：$CCACHE_ABS_DIR" 0
+        staging_dir="${{ env.SOURCE_DIR }}/staging_dir"
+        if [ -d "$staging_dir" ] && [ "$(ls -A "$staging_dir" 2>/dev/null)" ]; then
+          log_info "刷新已编译依赖库目录下的 stamp 文件时间戳..."
+          find "$staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r stamp_dir; do
+            if [ -n "$(find "$stamp_dir" -type f 2>/dev/null)" ]; then
+              find "$stamp_dir" -type f -exec touch {} +
+              log_success "已刷新：$stamp_dir（$(find "$stamp_dir" -type f | wc -l) 个文件）"
+              echo "status=success" >> $GITHUB_OUTPUT
+            else
+              log_warn "跳过空目录：$stamp_dir"
+            fi
+          done
+        else
+          log_warn "未检测到有效的编译缓存目录，跳过时间戳刷新"
+        fi
+        # 修复：原判断用 -f（普通文件），对目录永远为假，缓存时间戳刷新被跳过
+        if [ -d "$CCACHE_ABS_DIR" ] && [ "$(ls -A "$CCACHE_ABS_DIR" 2>/dev/null)" ]; then
+          log_success "检测到 ccache 缓存：$(du -sh "$CCACHE_ABS_DIR" | cut -f1)"
+          find "$CCACHE_ABS_DIR" -exec touch {} + 2>/dev/null
+          log_success "已刷新 ccache 缓存文件时间戳"
+        else
+          log_warn "未检测到可用的 .ccache 缓存目录（$CCACHE_ABS_DIR），本次等同于冷编译"
+        fi
+
+    - name: 下载软件包
+      id: package
+      run: |
+        if [[ "${{ env.BUILD_TYPE }}" == "Host" ]]; then
+          source ${{ env.BUILD_SCRIPT }} && download_packages
+        else
+          docker exec builder bash -c 'source ${{ env.BUILD_SCRIPT }} && download_packages'
+        fi
+ 
+    - name: 上传配置文件
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        log_warn "下载软件包中执行的make defconfig会检查并处理.config配置文件，尽量减少编译出错的问题，比如软件不兼容、缺少依赖等等被将相关配置移除改变.config配置文件，所以将改变后的.config上传到defconfig.config！" 0
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        cd "$WORK_DIR"
+        CONFIG_SOURCE="$SOURCE_DIR/.config"
+        cp -f "$CONFIG_SOURCE" "defconfig.config" && log_success "已复制$CONFIG_SOURCE到项目根目录的defconfig.config" 0
+        if [ ! -f "defconfig.config" ]; then
+            log_err "defconfig.config 不存在，无法上传！" 1
+        elif ! git ls-files --error-unmatch "defconfig.config" >/dev/null 2>&1; then
+            git add "defconfig.config"
+            git commit -m "初始化 defconfig.config（Actions #${GITHUB_RUN_NUMBER}）"
+            git push "https://${{ secrets.REPO_TOKEN }}@github.com/${{ github.repository }}.git" "${{ github.ref }}"
+            log_success "defconfig.config 首次上传成功" 0
+        else
+            if git diff --quiet "defconfig.config"; then
+                log_info "defconfig.config 未修改，无需上传" 0
+            else
+                git add "defconfig.config"
+                git commit -m "更新 defconfig.config（Actions #${GITHUB_RUN_NUMBER}）"
+                git push "https://${{ secrets.REPO_TOKEN }}@github.com/${{ github.repository }}.git" "${{ github.ref }}"
+                log_success "defconfig.config 已更新并上传" 0
+            fi
+        fi
+
+    - name: 编译固件
+      id: compile
+      run: |
+        source ${{ env.BUILD_SCRIPT }} 
+        if [[ "${{ env.BUILD_TYPE }}" == "Host" ]]; then
+          compile_firmware
+        else
+          docker exec builder bash -c 'source ${BUILD_SCRIPT} && compile_firmware'
+        fi
+        # 说明：compile_firmware 失败时会自行 exit 1（bash -e 下也会直接终止本 step），
+        # 原脚本里的 $compile_exit_code 从未被赋值，属于无效判断，已移除。
+        echo "status=success" >> $GITHUB_OUTPUT
+        FILE_DATE="_$(date +"%Y%m%d%H%M")"
+        echo "FILE_DATE=${FILE_DATE}" >> $GITHUB_ENV
+        EXTRACTED_SYSTEM_VERSION=$(grep -oP 'CONFIG_VERSION_NUMBER="\K[0-9]+\.[0-9]+\.[0-9]+' \
+        ${{ env.SOURCE_DIR }}/build_dir/target-*/linux-*/linux-*/.config 2>/dev/null | head -n 1)
+        SYSTEM_VERSION=${EXTRACTED_SYSTEM_VERSION:-${SYSTEM_VERSION}}
+        echo "SYSTEM_VERSION=${SYSTEM_VERSION}" >> $GITHUB_ENV
+        EXTRACTED_KERNEL_VERSION=$(grep -oP 'CONFIG_LINUX_VERSION="\K[0-9]+\.[0-9]+\.[0-9]+' \
+        ${{ env.SOURCE_DIR }}/build_dir/target-*/linux-*/linux-*/.config 2>/dev/null | head -n 1)
+        KERNEL_VERSION=${EXTRACTED_KERNEL_VERSION:-${KERNEL_VERSION}}
+        echo "KERNEL_VERSION=${KERNEL_VERSION}" >> $GITHUB_ENV
+
+    - name: 上传编译日志
+      id: uploadbuildlog
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log-${{ github.run_number }}
+        path: |
+          ${{ env.WORK_DIR }}/build.log
+          ${{ env.WORK_DIR }}/build-detail.log
+        if-no-files-found: warn
+        retention-days: 7
+
+    - name: 检查编译后磁盘空间
+      if: (!cancelled())
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        log_info "===== 磁盘空间 =====" 0
+        log_highlight "系统空间      类型   总数  已用  可用 使用率" 0
+        log_highlight "$(df -hT "$PWD")" 0
+
+    - name: 整理固件文件
+      id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
+      shell: bash
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        log_highlight "厂商: $DEVICE_TARGET" 0
+        log_highlight "平台: $DEVICE_SUBTARGET" 0
+        log_highlight "项目目录: $PWD" 0
+        log_highlight "源码目录: ${{ env.SOURCE_DIR }}" 0
+        shopt -s nullglob
+        FIRMWARE_DIR_CANDIDATES="${{ env.SOURCE_DIR }}/bin/targets/*/*"
+        FIRMWARE_DIRS=($FIRMWARE_DIR_CANDIDATES)
+        if [ ${#FIRMWARE_DIRS[@]} -eq 0 ]; then
+          log_error "未找到固件目录！检查路径：${{ env.SOURCE_DIR }}/bin/targets/" 0
+          exit 1
+        fi
+        cd "${FIRMWARE_DIRS[0]}"
+        rm -rf packages *.buildinfo *.manifest *.json *bl2.bin 2>/dev/null || log_warn "注意：某些文件可能不存在，继续处理" 0
+        log_highlight "整理后的固件文件列表:" 0
+        ls -lh || log_warn "警告：当前目录无文件可列出" 0
+        
+        # 6. 输出环境变量和状态
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+        log_success "固件文件整理完成" 0
+
+    - name: 上传固件到Artifact
+      uses: actions/upload-artifact@v4
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: ${{ env.SOURCE_REPO }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+        retention-days: 7
+
+    - name: 上传到奶牛快传
+      id: cowtransfer
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        curl -fsSL git.io/file-transfer | sh
+        ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
+        log_info "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)" 0
+        echo "url=$(cat cowtransfer.log | grep https | cut -f3 -d" ")" >> $GITHUB_OUTPUT
+
+    - name: 上传到WeTransfer
+      id: wetransfer
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_WETRANSFER == 'true' && !cancelled()
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        curl -fsSL git.io/file-transfer | sh
+        ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
+        log_info "::warning file=wetransfer.com::$(cat wetransfer.log | grep https)" 0
+        echo "url=$(cat wetransfer.log | grep https | cut -f3 -d" ")" >> $GITHUB_OUTPUT
+
+    - name: 生成发布信息
+      id: tag
+      shell: bash
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        grep -E '^CONFIG_PACKAGE_luci-(app|theme)-.*=y$' "${SOURCE_DIR}/.config" 2>/dev/null | 
+          awk -F'[=]' '{print substr($1, 16)}' | 
+          sed '/^$/d' > "/tmp/plugins.tmp"  
+        COMMIT_LOGS_RESTORED=$(echo "$COMMIT_LOGS" | tr '|' '\n' | sed 's/^/  - /')
+        cat > release.txt <<EOF
+        ### ${DEVICE_NAME}-immortalwrt 固件
+
+        - 后台地址：${LAN_IP}
+        - 登录账号：root
+        - 登录密码：无
+        - 设备信息：${DEVICE_TARGET}-${DEVICE_SUBTARGET}
+        - 设备型号：${DEVICE_NAME}
+        - 系统版本：${SYSTEM_VERSION}
+        - 内核版本：${KERNEL_VERSION}
+        - 5G高功率25db：$(if [[ "${HIGH_POWER_5G}" == "true" ]]; then echo "已"; else echo "未"; fi)启用
+        - 默认主题：${DEFAULT_THEME}
+        - 主机名：${HOSTNAME}
+        - WIFI名称：
+          - 2.4G：${WIFINAME_2G}
+          - 5G：${WIFINAME_5G}
+
+        #### 已选插件列表
+        \`\`\`
+        EOF
+        count=0
+        while IFS= read -r plugin; do
+          if [[ -n "${plugin}" ]]; then
+            count=$((count + 1))
+            echo "${count}、${plugin}" >> release.txt
+          fi
+        done < "/tmp/plugins.tmp"
+        if [[ ${count} -eq 0 ]]; then
+          echo "无额外插件（仅基础系统）" >> release.txt
+        fi
+        cat >> release.txt <<EOF
+        \`\`\`
+        #### 编译信息
+        - 触发来源：${TRIGGER_SOURCE}
+        - 工作编号：#${GITHUB_RUN_NUMBER}
+        - 编译类型：${BUILD_TYPE}
+        - 编译时间：$(date +"%Y-%m-%d %H:%M:%S %Z")
+        - 源码URL：${REPO_URL}
+        - 源码分支：${REPO_BRANCH}
+        - 源码更新日志：
+        ${COMMIT_LOGS_RESTORED}
+        EOF
+        cat release.txt
+        echo "status=success" >> $GITHUB_OUTPUT
+        log_success "发布信息生成完成" 0
+        
+    - name: 上传固件到Release
+      uses: softprops/action-gh-release@v2
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      with:
+        tag_name: ${{ env.DEVICE_NAME }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
+        body_path: release.txt
+        files: ${{ env.FIRMWARE }}/*
+
+    - name: 清理旧编译缓存
+      id: deletecache
+      if: env.CACHEWRTBUILD_SWITCH == 'true' && steps.refreshcache.outputs.status == 'success'
+      run: |
+        source ${{ env.BUILD_SCRIPT }}
+        # 获取缓存列表并删除
+        gh cache list --key ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_VERSION }}- --json key --jq '.[] | .key' | while read -r key; do
+          log_info "清理旧编译缓存: $key" 0
+          gh cache delete "$key"
+          echo "status=success" >> $GITHUB_OUTPUT
+        done
+        # 输出缓存状态
+        log_separator "========缓存状态========" 0
+        log_info "ccache: $(du -sh $SOURCE_DIR/.ccache | cut -f 1)" 0
+        log_info "staging: $(du -sh $SOURCE_DIR/staging_dir | cut -f 1)" 0
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: 清理旧工作流记录
+      uses: GitRML/delete-workflow-runs@main
+      with:
+        retain_days: 15
+        keep_minimum_runs: 7
+        repository: ${{ github.repository }}
+
+    - name: 清理旧Release
+      uses: dev-drprasad/delete-older-releases@v0.3.4
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      with:
+        keep_latest: 30
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
