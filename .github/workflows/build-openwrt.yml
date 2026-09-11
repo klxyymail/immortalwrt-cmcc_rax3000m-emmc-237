@@ -6,7 +6,7 @@
 # Description: Build OpenWrt using GitHub Actions
 #
 
-name: 编译固件（RAX3000M-NAND与XR30-eMMC）
+name: 编译固件（XR30-EMMC）
 
 on:
   repository_dispatch:  
@@ -33,10 +33,10 @@ on:
         options:
           - argon
           - bootstrap
-#      hostname:
-#        description: '设置主机名'
-#        required: false
-#        default: 'XR30-eMMC'
+      hostname:
+        description: '设置主机名'
+        required: false
+        default: 'CMCC-XR30-eMMC'
       wifiname_2g:
         description: '设置2.4GWiFi名称'
         required: false
@@ -420,15 +420,17 @@ jobs:
         # 单机型：TARGET_PROFILE="DEVICE_xxx"
         # 多机型（CONFIG_TARGET_MULTI_PROFILE=y）：TARGET_PROFILE 为空，
         # 此时改用实际选中的 CONFIG_TARGET_DEVICE_* 列表拼成机型名
-        SINGLE_NAME=$(grep '^CONFIG_TARGET_PROFILE="DEVICE_' .config | sed -E 's/^CONFIG_TARGET_PROFILE="DEVICE_(.*)"/\1/')
+        # 注意：本 step 的 shell 带 -e -o pipefail，grep 无匹配返回 1 会直接终止整个 step，
+        # 所以每条命令替换都要用 || true 兜底（原版写在 echo "$(...)" 里才侥幸没触发）
+        SINGLE_NAME=$(grep '^CONFIG_TARGET_PROFILE="DEVICE_' .config | sed -E 's/^CONFIG_TARGET_PROFILE="DEVICE_(.*)"/\1/' || true)
         if [ -n "$SINGLE_NAME" ]; then
           echo "DEVICE_NAME=$SINGLE_NAME" >> $GITHUB_ENV
         else
-          MULTI_NAME=$(grep -oP '^CONFIG_TARGET_DEVICE_[a-z0-9]+_[a-z0-9]+_DEVICE_\K[^=]+(?==y)' .config | paste -sd+ -)
+          MULTI_NAME=$(grep -oP '^CONFIG_TARGET_DEVICE_[a-z0-9]+_[a-z0-9]+_DEVICE_\K[^=]+(?==y)' .config | paste -sd+ - || true)
           echo "DEVICE_NAME=${MULTI_NAME:-multi-devices}" >> $GITHUB_ENV
           echo "MULTI_DEVICE=true" >> $GITHUB_ENV
         fi
-        echo "KERNEL_VERSION=$(grep "^CONFIG_LINUX_[0-9_]\+=y" .config | sed -r 's/CONFIG_LINUX_([0-9]+)_([0-9]+)=y/\1.\2/')" >> $GITHUB_ENV
+        echo "KERNEL_VERSION=$(grep "^CONFIG_LINUX_[0-9_]\+=y" .config | sed -r 's/CONFIG_LINUX_([0-9]+)_([0-9]+)=y/\1.\2/' || true)" >> $GITHUB_ENV
         if [ -f "${SOURCE_DIR}/feeds.conf.default" ]; then
           echo "FEEDS_HASH=$(sha256sum ${SOURCE_DIR}/feeds.conf.default | cut -d ' ' -f 1)" >> $GITHUB_ENV
         else
