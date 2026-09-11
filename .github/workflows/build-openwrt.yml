@@ -6,7 +6,7 @@
 # Description: Build OpenWrt using GitHub Actions
 #
 
-name: 编译固件（XR30-EMMC）
+name: 编译固件（openwrt）
 
 on:
   repository_dispatch:  
