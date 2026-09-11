@@ -6,7 +6,7 @@
 # Description: Build OpenWrt using GitHub Actions
 #
 
-name: 编译固件（XR30-EMMC）
+name: 编译固件（RAX3000M-NAND与XR30-eMMC）
 
 on:
   repository_dispatch:  
@@ -33,10 +33,13 @@ on:
         options:
           - argon
           - bootstrap
-      hostname:
-        description: '设置主机名'
-        required: false
-        default: 'CMCC-XR30-eMMC'
+      # 主机名输入已停用：现在一次编译 RAX3000M-NAND 与 XR30-eMMC 两个机型，
+      # 菜单里填主机名没有意义（两台机器共用一份 rootfs，主机名相同）。
+      # 需要改主机名请直接改下面 env 里 HOSTNAME 那一行（现在是源码默认的 ImmortalWrt）。
+      # hostname:
+      #   description: '设置主机名'
+      #   required: false
+      #   default: 'CMCC-XR30-eMMC'
       wifiname_2g:
         description: '设置2.4GWiFi名称'
         required: false
@@ -72,7 +75,12 @@ env:
   # 用户可配置参数 - 优先使用 workflow_dispatch 输入，其次使用 repository_dispatch 的 client_payload
   LAN_IP: ${{ github.event.inputs.lan_ip || github.event.client_payload.inputs.lan_ip || '192.168.3.1' }}
   DEFAULT_THEME: ${{ github.event.inputs.default_theme || github.event.client_payload.inputs.default_theme || 'argon' }}
-  HOSTNAME: ${{ github.event.inputs.hostname || github.event.client_payload.inputs.hostname || 'RoWrt' }}
+  # 主机名：用源码默认的 ImmortalWrt。
+  # 菜单里的 hostname 输入已停用（一次编两个机型、共用 rootfs，填主机名没意义），
+  # 所以只有 repository_dispatch 外部触发时可能带 hostname 进来。
+  # build-openwrt.sh 里是 sed 'ImmortalWrt' -> $HOSTNAME，填 ImmortalWrt 等于不改，
+  # 也就是保持源码默认。想自定义就把最后的 'ImmortalWrt' 换掉。
+  HOSTNAME: ${{ github.event.client_payload.inputs.hostname || 'ImmortalWrt' }}
   HIGH_POWER_5G: ${{ format('{0}', github.event.inputs.high_power_5g || github.event.client_payload.inputs.high_power_5g || 'true') }}
   BUILD_TYPE: ${{ github.event.inputs.build_type || github.event.client_payload.inputs.build_type || 'Host' }}
   WIFINAME_2G: ${{ github.event.inputs.wifiname_2g || github.event.client_payload.inputs.wifiname_2g || 'DaGe' }}
@@ -97,7 +105,8 @@ env:
   # 新增缓存相关变量
   # v2：v1 的缓存里带了 staging_dir（含已装好 musl 的 toolchain 目录），会让 binutils
   # 编译失败，这里升版本让旧缓存直接失效，不用手动去删 cache
-  CACHE_VERSION: v2
+  # v3：新增了 XR30 eMMC 设备定义和 .config 的多机型配置，升版本让旧缓存失效
+  CACHE_VERSION: v3
   KEEP_RECENT_CACHES: 3
   DEVICE_NAME: cmcc_rax3000m-nand-mtk+cmcc_xr30-emmc
   KERNEL_VERSION: "6.6"
@@ -148,7 +157,7 @@ jobs:
           COMMIT_HASH="${{ github.event.client_payload.inputs.commit_hash }}"
           LAN_IP="${{ github.event.client_payload.inputs.lan_ip }}"
           DEFAULT_THEME="${{ github.event.client_payload.inputs.default_theme }}"
-          HOSTNAME="${{ github.event.client_payload.inputs.hostname }}"
+          HOSTNAME="${{ github.event.client_payload.inputs.hostname || 'ImmortalWrt' }}"
           HIGH_POWER_5G="${{ github.event.client_payload.inputs.high_power_5g }}"
           WIFINAME_2G="${{ github.event.client_payload.inputs.wifiname_2g }}"
           WIFINAME_5G="${{ github.event.client_payload.inputs.wifiname_5g }}"
