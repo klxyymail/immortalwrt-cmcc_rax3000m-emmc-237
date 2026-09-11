@@ -8,6 +8,7 @@
 # https://github.com/P3TERX/Actions-OpenWrt
 # File name: diy-part1.sh
 # Description: OpenWrt DIY script part 1 (Before Update feeds)
+#              本脚本在 OpenWrt 源码根目录(./openwrt)下执行
 #
 
 # 添加feed源函数
@@ -69,35 +70,89 @@ clone_package "https://github.com/KyleRicardo/MentoHUST-OpenWrt-ipk.git" "packag
 clone_package "https://github.com/whzhni1/luci-app-harbor-file-pro.git" "package/luci-app-harbor-file-pro"
 
 # ==========================================================================
-# 适配 CMCC XR30 eMMC 的 LED（红灯 pio35 / 白灯 pio34）
+# 新增 CMCC XR30 eMMC（RAX3000Z 增强版）设备 profile：cmcc_xr30-emmc
 #
-# 背景：RAX3000M eMMC 与 XR30 eMMC 硬件相同（MT7981B+512M+64G eMMC），固件可互刷，
-#       唯一差异是 LED：RAX3000M 有 3 颗（绿 pio9 / 蓝 pio12 / 红 pio35），
-#       XR30 只有 2 颗（白 pio34 / 红 pio35）。
-#       因此红灯天然可用，白灯因固件 DTS 未定义 pio34 而完全不可控。
+# 说明：
+#   XR30 eMMC 与 RAX3000M eMMC 硬件完全一致（MT7981B + DDR4 512M + 64G eMMC
+#   + MT7531 + MT7976C），唯一区别是 LED：
+#       RAX3000M eMMC：绿 pio9 / 蓝 pio12 / 红 pio35
+#       XR30   eMMC：白 pio34（投影灯）/ 红 pio35
+#   因此这里以 mt7981b-cmcc-rax3000m-emmc-mtk.dts 为蓝本新建一个 dts，
+#   保留 eMMC/mmc0、factory 分区（MAC / eeprom）、网络交换、USB 等全部配置，
+#   只改机型名、compatible 和 LED，并新增独立的设备 profile，
+#   使固件文件名、board_name 都正确显示为 XR30。
 #
-# 做法：保留 compatible = "cmcc,rax3000m-emmc" 不变（这样 02_network 中
-#       "*rax3000m*" 分支仍能命中，LAN/WAN MAC 依旧从 eMMC factory 分区
-#       0x24/0x2a 读取，不会出现 MAC 随机），仅替换 LED 节点与别名。
+#   本段在 make defconfig 之前执行（diy-part1 早于 .config 加载），
+#   因此新增的 profile 能被正常识别。
 # ==========================================================================
-DTS_FILE="target/linux/mediatek/dts/mt7981b-cmcc-rax3000m-emmc-mtk.dts"
-if [ -f "$DTS_FILE" ]; then
-    python3 - "$DTS_FILE" <<'PYEOF'
-import re, sys
-p = sys.argv[1]
-s = open(p, encoding='utf-8').read()
-orig = s
 
-# 1) 别名：运行时/升级指示灯由绿灯改为白灯
-s = s.replace('led-running = &green_led;', 'led-running = &white_led;')
-s = s.replace('led-upgrade = &green_led;', 'led-upgrade = &white_led;')
+MK_FILE="target/linux/mediatek/image/filogic.mk"
+DTS_DIR="target/linux/mediatek/dts"
+DTS_FILE="$DTS_DIR/mt7981b-cmcc-xr30-emmc.dts"
+SMP_FILE="package/mtk/applications/mtk-smp/files/smp.sh"
+UBOOTENV_FILE="package/boot/uboot-envtools/files/mediatek"
 
-# 2) 只改显示型号，compatible 保持 cmcc,rax3000m-emmc 不动
-s = s.replace('model = "CMCC RAX3000M eMMC (MTK UBoot)";',
-              'model = "CMCC XR30 eMMC (MTK UBoot)";')
+if [ ! -f "$MK_FILE" ]; then
+    echo "❌ 未找到 $MK_FILE，无法新增 XR30 eMMC 设备，终止编译！"
+    exit 1
+fi
 
-# 3) 整个 gpio-leds 节点替换为 XR30 的双色灯
-new_leds = '''	gpio-leds {
+# ---------- 1. 写入设备树 ----------
+mkdir -p "$DTS_DIR"
+cat > "$DTS_FILE" <<'DTSEOF'
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+/*
+ * CMCC XR30 eMMC (RAX3000Z 增强版) - MTK U-Boot layout
+ * 基于 mt7981b-cmcc-rax3000m-emmc-mtk.dts
+ * 硬件与 RAX3000M eMMC 相同，差异仅在 LED：白 pio34（投影灯）/ 红 pio35
+ */
+
+/dts-v1/;
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+
+#include "mt7981.dtsi"
+
+/ {
+	model = "CMCC XR30 eMMC";
+	compatible = "cmcc,xr30-emmc", "mediatek,mt7981";
+
+	aliases {
+		led-boot = &red_led;
+		led-failsafe = &red_led;
+		led-running = &white_led;
+		led-upgrade = &white_led;
+		serial0 = &uart0;
+	};
+
+	chosen: chosen {
+		bootargs = "root=PARTLABEL=rootfs rootwait rootfstype=squashfs,f2fs";
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory {
+		reg = <0 0x40000000 0 0x20000000>;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		button-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+		};
+
+		button-mesh {
+			label = "mesh";
+			linux,code = <BTN_9>;
+			linux,input-type = <EV_SW>;
+			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	gpio-leds {
 		compatible = "gpio-leds";
 
 		white_led: led-0 {
@@ -112,24 +167,244 @@ new_leds = '''	gpio-leds {
 			gpios = <&pio 35 GPIO_ACTIVE_LOW>;
 		};
 	};
-'''
-s = re.sub(r'\tgpio-leds \{.*?\n\t\};\n', new_leds, s, count=1, flags=re.S)
+};
 
+&mmc0 {
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	max-frequency = <52000000>;
+	non-removable;
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc0_pins_default>;
+	pinctrl-1 = <&mmc0_pins_uhs>;
+	vmmc-supply = <&reg_3p3v>;
+	status = "okay";
+
+	card@0 {
+		compatible = "mmc-card";
+		reg = <0>;
+
+		block {
+			compatible = "block-device";
+
+			partitions {
+				block-partition-factory {
+					partname = "factory";
+
+					nvmem-layout {
+						compatible = "fixed-layout";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+						eeprom_factory_0: eeprom@0 {
+							reg = <0x0 0x1000>;
+						};
+
+						macaddr_factory_24: macaddr@24 {
+							compatible = "mac-base";
+							reg = <0x24 0x6>;
+							#nvmem-cell-cells = <1>;
+						};
+
+						macaddr_factory_2a: macaddr@2a {
+							compatible = "mac-base";
+							reg = <0x2a 0x6>;
+							#nvmem-cell-cells = <1>;
+						};
+					};
+				};
+			};
+		};
+	};
+};
+
+&eth {
+	status = "okay";
+
+	gmac0: mac@0 {
+		compatible = "mediatek,eth-mac";
+		reg = <0>;
+		phy-mode = "2500base-x";
+
+		nvmem-cells = <&macaddr_factory_24 0>;
+		nvmem-cell-names = "mac-address";
+		fixed-link {
+			speed = <2500>;
+			full-duplex;
+			pause;
+		};
+	};
+
+	gmac1: mac@1 {
+		compatible = "mediatek,eth-mac";
+		reg = <1>;
+		phy-mode = "gmii";
+		phy-handle = <&int_gbe_phy>;
+
+		nvmem-cells = <&macaddr_factory_2a 0>;
+		nvmem-cell-names = "mac-address";
+	};
+};
+
+&mdio_bus {
+	switch: switch@1f {
+		compatible = "mediatek,mt7531";
+		reg = <31>;
+		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		interrupt-parent = <&pio>;
+		interrupts = <38 IRQ_TYPE_LEVEL_HIGH>;
+	};
+};
+
+&switch {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			label = "lan3";
+		};
+
+		port@1 {
+			reg = <1>;
+			label = "lan2";
+		};
+
+		port@2 {
+			reg = <2>;
+			label = "lan1";
+		};
+
+		port@6 {
+			reg = <6>;
+			ethernet = <&gmac0>;
+			phy-mode = "2500base-x";
+
+			fixed-link {
+				speed = <2500>;
+				full-duplex;
+				pause;
+			};
+		};
+	};
+};
+
+&pio {
+	mmc0_pins_default: mmc0-pins-default {
+		mux {
+			function = "flash";
+			groups = "emmc_45";
+		};
+	};
+
+	mmc0_pins_uhs: mmc0-pins-uhs {
+		mux {
+			function = "flash";
+			groups = "emmc_45";
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&usb_phy {
+	status = "okay";
+};
+
+&watchdog {
+	status = "okay";
+};
+
+&xhci {
+	status = "okay";
+};
+DTSEOF
+echo "✅ 已写入设备树：$DTS_FILE"
+
+# ---------- 2. 在 filogic.mk 中新增设备 profile ----------
+if ! grep -qE "^define Device/cmcc_xr30-emmc$" "$MK_FILE"; then
+    python3 - "$MK_FILE" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+
+anchor = "TARGET_DEVICES += cmcc_rax3000m-emmc-mtk\n"
+if anchor not in s:
+    print("❌ filogic.mk 中未找到锚点 TARGET_DEVICES += cmcc_rax3000m-emmc-mtk")
+    sys.exit(1)
+
+block = """
+define Device/cmcc_xr30-emmc
+  DEVICE_VENDOR := CMCC
+  DEVICE_MODEL := XR30 EMMC
+  DEVICE_VARIANT := (MTK layout)
+  DEVICE_DTS := mt7981b-cmcc-xr30-emmc
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-usb3 f2fsck mkf2fs
+  SUPPORTED_DEVICES += cmcc,xr30-emmc cmcc,rax3000m-emmc
+  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \\
+\tfit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += cmcc_xr30-emmc
+"""
+
+s = s.replace(anchor, anchor + block, 1)
 open(p, 'w', encoding='utf-8').write(s)
-
-ok = ('&pio 34 GPIO_ACTIVE_LOW' in s and '&pio 35 GPIO_ACTIVE_LOW' in s
-      and 'white_led' in s and 'green_led' not in s and 'pio 12' not in s)
-print("✅ DTS LED 已适配 XR30 eMMC（白 pio34 / 红 pio35）" if ok
-      else "❌ DTS LED 适配结果校验失败")
-sys.exit(0 if ok else 1)
+print("✅ filogic.mk 已新增 cmcc_xr30-emmc 设备")
 PYEOF
     if [ $? -ne 0 ]; then
-        echo "❌ 适配 XR30 eMMC LED 失败，终止编译！"
+        echo "❌ 新增 XR30 eMMC 设备 profile 失败，终止编译！"
         exit 1
     fi
 else
-    echo "❌ 未找到 $DTS_FILE，无法适配 XR30 eMMC LED，终止编译！"
-    exit 1
+    echo "ℹ️ filogic.mk 中已存在 cmcc_xr30-emmc，跳过"
+fi
+
+# ---------- 3. mtk-smp：让 board_name 命中 MT7981 硬件加速分组 ----------
+if [ -f "$SMP_FILE" ]; then
+    if ! grep -q "cmcc,xr30" "$SMP_FILE"; then
+        python3 - "$SMP_FILE" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = "\t*rax3000m* |\\\n"
+if old not in s:
+    print("ℹ️ smp.sh 中未找到 *rax3000m* 锚点，跳过")
+    sys.exit(0)
+s = s.replace(old, old + "\tcmcc,xr30* |\\\n", 1)
+open(p, 'w', encoding='utf-8').write(s)
+print("✅ smp.sh 已加入 cmcc,xr30* 到 MT7981 分组")
+PYEOF
+    fi
+else
+    echo "ℹ️ 未找到 $SMP_FILE，跳过 smp.sh 适配（不影响编译）"
+fi
+
+# ---------- 4. uboot-envtools：让 fw_printenv 识别新机型（eMMC） ----------
+if [ -f "$UBOOTENV_FILE" ]; then
+    if ! grep -q "cmcc,xr30" "$UBOOTENV_FILE"; then
+        python3 - "$UBOOTENV_FILE" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = "cmcc,rax3000m-emmc |\\\n"
+if old not in s:
+    print("ℹ️ ubootenv 中未找到 cmcc,rax3000m-emmc 锚点，跳过")
+    sys.exit(0)
+s = s.replace(old, "cmcc,xr30-emmc* |\\\n" + old, 1)
+open(p, 'w', encoding='utf-8').write(s)
+print("✅ uboot-envtools 已加入 cmcc,xr30-emmc*")
+PYEOF
+    fi
+else
+    echo "ℹ️ 未找到 $UBOOTENV_FILE，跳过 uboot-envtools 适配（不影响编译）"
 fi
 
 echo "✅ diy-part1.sh 执行完成"
