@@ -33,10 +33,10 @@ on:
         options:
           - argon
           - bootstrap
-      hostname:
-        description: '设置主机名'
-        required: false
-        default: 'CMCC-XR30-eMMC'
+#      hostname:
+#        description: '设置主机名'
+#        required: false
+#        default: 'XR30-eMMC'
       wifiname_2g:
         description: '设置2.4GWiFi名称'
         required: false
