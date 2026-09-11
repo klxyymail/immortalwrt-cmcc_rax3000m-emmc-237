@@ -36,15 +36,15 @@ update_name(){
     fi  
 }
 # 替换插件名字
-update_name "终端" "TTYD"
-update_name "TTYD 终端" "TTYD"
-update_name "网络存储" "NAS"
+#update_name "终端" "TTYD"
+#update_name "TTYD 终端" "TTYD"
+#update_name "网络存储" "NAS"
 update_name "实时流量监测" "流量监测"
-update_name "KMS 服务器" "KMS"
+#update_name "KMS 服务器" "KMS"
 update_name "USB 打印服务器" "打印服务"
 update_name "Web 管理" "Web管理"
 update_name "管理权" "账号管理"
-update_name "带宽监控" "监控"
+#update_name "带宽监控" "监控"
 
 # 解决 libxcrypt 因 -Werror=format-nonliteral 导致的编译错误
 LIBXCRYPT_MAKEFILE="feeds/packages/libs/libxcrypt/Makefile"
