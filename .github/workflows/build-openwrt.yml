@@ -6,7 +6,7 @@
 # Description: Build OpenWrt using GitHub Actions
 #
 
-name: 编译固件（openwrt）
+name: 编译固件（RAX3000M-NAND与XR30-eMMC）
 
 on:
   repository_dispatch:  
