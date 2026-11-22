@@ -90,7 +90,39 @@ fi
 # wireguard-tools（没有 wg 命令）和 luci-proto-wireguard（网页面板里
 # 根本看不到 WireGuard 接口），等于内核支持是空的。
 # ============================================================
+# ============================================================
+# 自定义插件：固件更新（luci-app-autoupdate）
+#
+# 插件源码放在仓库 package/ 下，这里复制进源码树。
+# 同时写入本机构建标识 /etc/fwupdate.version，供插件判断版本。
+#
+# 为什么用 run_number 而不是时间戳：Release tag 里的时间戳是构建「完成」
+# 时间，而固件内只能记录「开始」时间，两者差 1~2 小时。直接比时间会把
+# 自己这次构建误判成新版本（刷完就提示有更新）。run_number 单调递增，
+# 本机记录的就是产出这份固件的那次构建编号，比对精确。
+# ============================================================
+REPO_ROOT="${GITHUB_WORKSPACE:-$(dirname "$PWD")}"
+if [ -d "$REPO_ROOT/package/luci-app-autoupdate" ]; then
+    rm -rf package/luci-app-autoupdate
+    cp -r "$REPO_ROOT/package/luci-app-autoupdate" package/
+    chmod +x package/luci-app-autoupdate/root/usr/bin/AutoUpdate \
+             package/luci-app-autoupdate/root/etc/init.d/autoupdate \
+             package/luci-app-autoupdate/root/etc/uci-defaults/40_luci-app-autoupdate
+    echo "✅ 已复制 luci-app-autoupdate（固件更新插件）"
+else
+    echo "⚠️  未找到 package/luci-app-autoupdate，跳过" >&2
+fi
+
+mkdir -p ./files/etc
+{
+    echo "BUILD_STAMP=$(date '+%Y%m%d%H%M')"
+    echo "BUILD_RUN=${GITHUB_RUN_NUMBER:-0}"
+    echo "BUILD_SHA=${GITHUB_SHA:-unknown}"
+} > ./files/etc/fwupdate.version
+echo "✅ 已写入构建标识：$(tr '\n' ' ' < ./files/etc/fwupdate.version)"
+
 VPN_CFG="
+CONFIG_PACKAGE_luci-app-autoupdate
 CONFIG_PACKAGE_kmod-wireguard
 CONFIG_PACKAGE_wireguard-tools
 CONFIG_PACKAGE_luci-proto-wireguard
