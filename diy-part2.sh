@@ -127,15 +127,37 @@ done
 # 为什么要有这一步：make defconfig 遇到 feeds 里不存在的 PACKAGE 符号时
 # 不会报错，而是静默把 .config 里的 =y 抹成 not set，最后编出一个
 # 「看着正常、实际没有 VPN」的固件，非常难排查。宁可在编译早期直接失败。
+#
+# 判定方式是两级的（Run #14 因为只用了第一级而误杀，务必保留第二级）：
+#   1) PKG_NAME 精确匹配 —— 普通 OpenWrt 包
+#   2) 同名目录内存在 Makefile —— LuCI 系列包（luci-app-* / luci-proto-*）
+#      的 Makefile 里根本不写 PKG_NAME，名字是 luci.mk 用 $(notdir $(CURDIR))
+#      从目录名推导出来的，光靠 grep PKG_NAME 一定判定为不存在。
 # ============================================================
 NEED_PKGS="wireguard-tools luci-proto-wireguard luci-app-ddns ddns-scripts qrencode zerotier luci-app-zerotier"
 PKGNAMES_FILE="$(mktemp)"
 # 一次性把所有 Makefile 的 PKG_NAME 抓出来，避免每个包都全盘 find
 find package feeds -name Makefile -type f -exec grep -h '^PKG_NAME[[:space:]]*:=' {} + 2>/dev/null \
-    | sed 's/^PKG_NAME[[:space:]]*:=[[:space:]]*//' | tr -d ' \r' | sort -u > "$PKGNAMES_FILE"
+    | sed 's/^PKG_NAME[[:space:]]*:=[[:space:]]*//' | tr -d ' \r' | sort -u > "$PKGNAMES_FILE" || true
+
+pkg_exists() {
+    _p="$1"
+    if grep -qx "$_p" "$PKGNAMES_FILE" 2>/dev/null; then
+        return 0
+    fi
+    for _d in $(find package feeds -type d -name "$_p" 2>/dev/null); do
+        if [ -f "$_d/Makefile" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 MISSING=""
 for _p in $NEED_PKGS; do
-    if ! grep -qx "$_p" "$PKGNAMES_FILE"; then
+    if pkg_exists "$_p"; then
+        echo "✅ 包存在：${_p}"
+    else
         MISSING="$MISSING $_p"
     fi
 done
