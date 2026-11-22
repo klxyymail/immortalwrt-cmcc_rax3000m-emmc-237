@@ -79,5 +79,81 @@ else
     exit 1
 fi
 
+# ============================================================
+# 强制启用「从外网连回家」所需的配置
+#
+# 背景：仓库根目录的 .config 是 348KB 的完整配置，直接改容易被后续
+# 手工同步或 make defconfig 覆盖。这里在编译前统一兜一遍，保证每次
+# 构建出来的固件一定带 WireGuard 服务端 + DDNS + ZeroTier 兜底。
+#
+# 之前漏掉的正是这几项：只开了 kmod-wireguard（内核模块），却没开
+# wireguard-tools（没有 wg 命令）和 luci-proto-wireguard（网页面板里
+# 根本看不到 WireGuard 接口），等于内核支持是空的。
+# ============================================================
+VPN_CFG="
+CONFIG_PACKAGE_kmod-wireguard
+CONFIG_PACKAGE_wireguard-tools
+CONFIG_PACKAGE_luci-proto-wireguard
+CONFIG_PACKAGE_rpcd-mod-wireguard
+CONFIG_PACKAGE_luci-lib-uqr
+CONFIG_PACKAGE_qrencode
+CONFIG_PACKAGE_kmod-tun
+CONFIG_PACKAGE_luci-app-ddns
+CONFIG_PACKAGE_ddns-scripts
+CONFIG_PACKAGE_ddns-scripts-services
+CONFIG_PACKAGE_zerotier
+CONFIG_PACKAGE_luci-app-zerotier
+"
+for _k in $VPN_CFG; do
+    if grep -q "^${_k}=y$" .config; then
+        echo "✅ 已启用：${_k}"
+    elif grep -q "^# ${_k} is not set$" .config; then
+        sed -i "s|^# ${_k} is not set\$|${_k}=y|" .config
+        if grep -q "^${_k}=y$" .config; then
+            echo "✅ 已启用（原为未设置）：${_k}"
+        else
+            echo "❌ 启用失败：${_k}" >&2
+            exit 1
+        fi
+    else
+        echo "⚠️  .config 中没有 ${_k} 条目，追加" >&2
+        echo "${_k}=y" >> .config
+    fi
+done
+
+# ============================================================
+# 远程访问（WireGuard / DDNS / ZeroTier）关键包校验
+#
+# 为什么要有这一步：make defconfig 遇到 feeds 里不存在的 PACKAGE 符号时
+# 不会报错，而是静默把 .config 里的 =y 抹成 not set，最后编出一个
+# 「看着正常、实际没有 VPN」的固件，非常难排查。宁可在编译早期直接失败。
+# ============================================================
+NEED_PKGS="wireguard-tools luci-proto-wireguard luci-app-ddns ddns-scripts qrencode zerotier luci-app-zerotier"
+PKGNAMES_FILE="$(mktemp)"
+# 一次性把所有 Makefile 的 PKG_NAME 抓出来，避免每个包都全盘 find
+find package feeds -name Makefile -type f -exec grep -h '^PKG_NAME[[:space:]]*:=' {} + 2>/dev/null \
+    | sed 's/^PKG_NAME[[:space:]]*:=[[:space:]]*//' | tr -d ' \r' | sort -u > "$PKGNAMES_FILE"
+MISSING=""
+for _p in $NEED_PKGS; do
+    if ! grep -qx "$_p" "$PKGNAMES_FILE"; then
+        MISSING="$MISSING $_p"
+    fi
+done
+rm -f "$PKGNAMES_FILE"
+if [ -n "$MISSING" ]; then
+    echo "❌ 以下包在当前 feeds 中不存在，构建中止（否则会静默丢掉这些功能）：$MISSING" >&2
+    exit 1
+fi
+echo "✅ 远程访问关键包校验通过：$NEED_PKGS"
+
+# ============================================================
+# 修复 files/ 下脚本的可执行权限
+# GitHub 网页/API 提交的文件默认 644，而 uci-defaults、hotplug、/usr/bin
+# 下的脚本必须是可执行位，否则开机根本不会被调用（而且很难发现）。
+# ============================================================
+for _f in files/etc/uci-defaults/* files/etc/hotplug.d/iface/* files/usr/bin/* files/root/*.sh; do
+    [ -f "$_f" ] && chmod +x "$_f" && echo "✅ 已加可执行位：$_f"
+done 2>/dev/null || true
+
 # 显示最终配置文件信息
 echo "✅ diy-part2.sh 执行完成"

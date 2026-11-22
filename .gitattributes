@@ -1,0 +1,8 @@
+# 强制 shell 脚本和固件内置文件使用 LF 换行。
+# Windows 上如果 core.autocrlf=true，checkout 会变成 CRLF，
+# 而 shebang 行尾多一个 \r 会让路由器上所有脚本报 "not found"。
+*.sh            text eol=lf
+diy-part*.sh    text eol=lf
+build-openwrt.sh text eol=lf
+files/**        text eol=lf
+*.yml            text eol=lf

@@ -11,6 +11,15 @@ name: 编译固件（RAX3000M-NAND与XR30-eMMC）
 on:
   repository_dispatch:  
     types: [自动编译固件]
+  push:
+    branches: [ openwrt-24.10-6.6 ]
+    # 只有改动下面这些文件才自动构建，避免构建过程自己 push
+    # defconfig.config 时形成循环触发。
+    paths:
+      - '.config'
+      - 'diy-part1.sh'
+      - 'diy-part2.sh'
+      - 'files/**'
   workflow_dispatch:
     inputs:
       build_type:
