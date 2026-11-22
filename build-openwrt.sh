@@ -269,7 +269,16 @@ log_success "feeds安装完成！"
 load_custom_config() {
 log_info "开始加载自定义配置..."
 if [ -d "$WORK_DIR/files" ]; then
-    cp -r "$WORK_DIR/files" "$SOURCE_DIR/files" && log_success "已复制自定义files目录"
+    # 关键：必须先删目标目录再复制。若 $SOURCE_DIR/files 已存在（缓存残留
+    # 或源码自带），`cp -r src dst` 会变成 dst/files/，导致所有脚本落到
+    # rootfs 的 /files/etc/... 而不是 /etc/...，uci-defaults/hotplug 全部失效。
+    rm -rf "$SOURCE_DIR/files"
+    cp -r "$WORK_DIR/files" "$SOURCE_DIR/files" || { log_error "复制files目录失败"; return 1; }
+    # 校验：确保脚本确实在 files/ 的顶层，而不是嵌套在 files/files/ 里
+    if [ -d "$SOURCE_DIR/files/files" ]; then
+        log_error "检测到 files/files 嵌套目录，复制异常！"; return 1
+    fi
+    log_success "已复制自定义files目录（脚本位于 files/etc/、files/usr/ 顶层）"
 fi
 WORKDIR=$(pwd)
 cd "$SOURCE_DIR"

@@ -121,6 +121,18 @@ mkdir -p ./files/etc
 } > ./files/etc/fwupdate.version
 echo "✅ 已写入构建标识：$(tr '\n' ' ' < ./files/etc/fwupdate.version)"
 
+# 兜底校验：WireGuard 自动配置脚本必须已经位于 files/ 的顶层。
+# 若 load_custom_config 的 cp 产生 files/files/ 嵌套（目标目录预存在时
+# cp -r 的经典陷阱），这里直接让构建失败，避免又产出一份「看着正常、
+# 实际没有一键建隧道功能」的固件。
+if [ ! -f "./files/etc/uci-defaults/99-wireguard" ]; then
+    echo "❌ files/etc/uci-defaults/99-wireguard 缺失（files 目录可能被套了一层 files/files）" >&2
+    [ -f "./files/files/etc/uci-defaults/99-wireguard" ] && \
+        echo "   确认：检测到 files/files 嵌套，请检查 build-openwrt.sh 的 load_custom_config" >&2
+    exit 1
+fi
+echo "✅ WireGuard 自动配置脚本位置校验通过"
+
 VPN_CFG="
 CONFIG_PACKAGE_luci-app-autoupdate
 CONFIG_PACKAGE_kmod-wireguard
